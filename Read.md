@@ -380,3 +380,33 @@ How the values arrive:
 3. Values of four characters or more are masked in runner logs.
 4. In the backend they appear as ordinary attributes, so traces can be filtered by `jira.key`, `target.repo` and so on.
 5. Metric resources keep only a fixed allowlist of attributes, so custom tags are for traces.
+
+### How observability is wired
+
+```mermaid
+flowchart LR
+    subgraph ORG["GitHub Organization (set once)"]
+        S["Actions secrets and variables<br/>GH_AW_DEFAULT_OTLP_ENDPOINT<br/>GH_AW_DEFAULT_OTLP_HEADERS<br/>OTEL_EXPORTER_OTLP_PROTOCOL"]
+    end
+
+    subgraph REPOS["Repos (inherit at run time)"]
+        O["Orchestrator"]
+        F["Fixer"]
+        R["Reviewer"]
+    end
+
+    A["Per workflow:<br/>jira.key, target.repo,<br/>workflow.role, remediation.attempt"]
+
+    B[("OTLP backend<br/>Azure Monitor or any OTLP/HTTP")]
+
+    S -. "endpoint and auth" .-> O
+    S -. "endpoint and auth" .-> F
+    S -. "endpoint and auth" .-> R
+    A -. "custom attributes" .-> F
+
+    O -- "traces, metrics" --> B
+    F -- "traces, metrics" --> B
+    R -- "traces, metrics" --> B
+
+    B --> Q["Filter by jira.key<br/>to follow one ticket across workflows"]
+```
