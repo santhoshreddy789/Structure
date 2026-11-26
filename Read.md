@@ -318,3 +318,65 @@ Practical Calibration Strategy
 	• Are runs completing cleanly with headroom to spare and Jira backlog draining too slowly? → Bump max up to 8 or 10.
 Are you running on GitHub-hosted runners or self-hosted runners, and roughly how many vulnerability tickets per week does your scanner generate?
 
+## Observability
+
+### Overview
+Each workflow run exports telemetry directly from the GitHub Actions runner to the configured OTLP/HTTP endpoint. There is no collector or pipeline workflow in between. Export is push-based and per run. An export failure never fails the workflow.
+
+Configuration lives in the workflow frontmatter under `observability.otlp`. The endpoint host must be listed in `network.allowed`. Set `OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf` for backends that require protobuf, such as Azure Monitor. The default is `http/json`.
+
+### Exported automatically
+These need no extra configuration once `observability.otlp` is set.
+
+**Traces** (`/v1/traces`): spans for job setup, agent, MCP gateway and conclusion.
+
+| Area | Attributes |
+|---|---|
+| Model and tokens (GenAI) | `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.provider.name`, `gen_ai.agent.name`, `gen_ai.response.finish_reasons`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens` |
+| Cost and budget | `gh-aw.aic`, `gh-aw.max_ai_credits`, `gh-aw.max_ai_credits_exceeded`, `gh-aw.ai_credits_rate_limit_error` |
+| Agent behaviour | `gh-aw.turns`, `gh-aw.harness.attempts`, `gh-aw.harness.retry_reasons`, `gh-aw.working_set.*`, `gh-aw.model_routing.*` |
+| Run outcome | `gh-aw.run.status`, `gh-aw.agent.conclusion`, `gh-aw.detection.conclusion`, `gh-aw.error.count`, `gh-aw.error.messages`, `gh-aw.warning_count`, `gh-aw.permission_denied_count`, `gh-aw.action_minutes` |
+| Safe outputs | `gh-aw.output.item_count`, `gh-aw.output.item_types` |
+| Firewall | `gh-aw.firewall.requests`, `gh-aw.firewall.allowed_requests`, `gh-aw.firewall.blocked_requests` |
+| MCP | `gh-aw.mcp.tool_calls`, `gh-aw.mcp.failed_tool_calls`, `gh-aw.mcp.input_bytes`, `gh-aw.mcp.output_bytes` |
+| Trigger and correlation | `gh-aw.workflow.name`, `gh-aw.job.name`, `gh-aw.run.id`, `gh-aw.run.attempt`, `gh-aw.run.actor`, `gh-aw.event_name`, `gh-aw.trigger.*`, `gh-aw.episode.id`, `gh-aw.hop.*` |
+| Resource (on every span) | `service.name`, `gh-aw.repository`, `gh-aw.engine.id`, `github.run_id`, `github.sha`, `github.ref`, `runner.os`, `runner.arch`, `deployment.environment` |
+
+**Metrics** (`/v1/metrics`, on by default; disable with `GH_AW_OTEL_METRICS: "false"`):
+- `gh_aw.job.duration`, `gh_aw.job.errors`
+- `gen_ai.client.inference.usage.input_tokens`, `.output_tokens`, `.cache_read.input_tokens`, `.cache_write.input_tokens`
+- `gen_ai.invoke_agent.duration`
+- `gh_aw.agent.turns`, `gh_aw.tool_calls`
+- `gh_aw.ai.credits.limit_exceeded`, `gh_aw.ai.credits.rate_limit_errors`
+- `gh_aw.workflow.output.items`, `gh_aw.otlp.export.failures`
+
+**Logs** (`/v1/logs`): opt-in compact session logs, correlated to traces by trace ID and span ID.
+
+Local copies are also kept in the `agent` artifact as `otel.jsonl` and `otel-metrics.jsonl`.
+
+### Custom attributes
+Anything beyond the built-in set, such as Jira key, target repo or attempt number, is defined by the workflow author. It is defined in frontmatter and travels with the run's telemetry.
+
+| Where defined | Attached to | Notes |
+|---|---|---|
+| `observability.otlp.attributes` | Setup, conclusion and outcome-summary spans | Per-run tags, such as `jira.key` or `target.repo` |
+| `observability.otlp.resource-attributes` | Resource of every span | Static or run-level values, such as `service.name`. Do not use `secrets.*` or `vars.*`, because they are exported as plain text |
+| `OTEL_RESOURCE_ATTRIBUTES` | Resource of every span | Standard OTel variable |
+
+```yaml
+observability:
+  otlp:
+    attributes:
+      workflow.role: fixer
+      jira.key: ${{ github.event.inputs.jira_key }}
+      target.repo: ${{ github.event.inputs.target_repo }}
+    resource-attributes:
+      service.name: ar-remediation
+```
+
+How the values arrive:
+1. Values are resolved when the run starts, from workflow inputs or event context, and are plain strings.
+2. Empty values are omitted.
+3. Values of four characters or more are masked in runner logs.
+4. In the backend they appear as ordinary attributes, so traces can be filtered by `jira.key`, `target.repo` and so on.
+5. Metric resources keep only a fixed allowlist of attributes, so custom tags are for traces.
