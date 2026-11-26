@@ -111,6 +111,34 @@ safe-outputs:
   dispatch-workflow:
     workflows: [reviewer-worker]
     max: 1
+
+# ==============================================================================
+# OBSERVABILITY (OTLP)
+# ==============================================================================
+# Exports traces (setup, agent, MCP gateway, conclusion; model and token usage)
+# to any OTLP/HTTP backend.
+observability:
+  otlp:
+    endpoint: ${{ secrets.OTLP_ENDPOINT }}
+    headers:
+      Authorization: ${{ secrets.OTLP_AUTHORIZATION }}   # bare value, no scheme prefix
+    # Tags to find a run by ticket and repo in the backend
+    attributes:
+      workflow.role: fixer
+      jira.key: ${{ github.event.inputs.jira_key }}
+      target.repo: ${{ github.event.inputs.target_repo }}
+      remediation.attempt: ${{ github.event.inputs.attempt }}
+    resource-attributes:
+      service.name: ar-remediation
+
+# Default is http/json. Azure Monitor and Phoenix need http/protobuf
+env:
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+
+# Firewall must allow the telemetry host
+network:
+  allowed:
+    - "<otlp-host>"
 ---
 
 # Vulnerability Remediation Fixer (Attempt ${{ github.event.inputs.attempt }} of 3)
