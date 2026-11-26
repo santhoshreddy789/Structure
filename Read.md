@@ -389,7 +389,7 @@ flowchart LR
         S["Actions secrets and variables<br/>GH_AW_DEFAULT_OTLP_ENDPOINT<br/>GH_AW_DEFAULT_OTLP_HEADERS<br/>OTEL_EXPORTER_OTLP_PROTOCOL"]
     end
 
-    subgraph REPOS["Repos (inherit at run time)"]
+    subgraph REPO["Repo (inherit at run time)"]
         O["Orchestrator"]
         F["Fixer"]
         R["Reviewer"]
