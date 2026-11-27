@@ -507,3 +507,46 @@ In the backend, filter by `jira.key` to list every run for the ticket, then orde
 | Retry ceiling and escalation | Custom | `remediation.max_attempts`, `remediation.outcome` |
 
 Reviewer-driven retries start a new fixer run, so gh-aw does not see them as retries. The attempt number is passed in the dispatch and stamped as a custom attribute. The ceiling is reached when `remediation.attempt` equals `remediation.max_attempts` without approval.
+
+```
+flowchart LR
+    JIRA["Jira, ServiceNow VR"]
+    CMDB[("CMDB")]
+
+    subgraph CENTRAL["Central repo (remediation-platform)"]
+        direction TB
+        INTAKE["ar-intake<br/>ACTION: validate, CMDB lookup"]
+        TRIAGE["ar-triage<br/>AGENTIC: classify, set label"]
+        RELEASE["ar-release<br/>ACTION: queue by severity"]
+        WB["ar-writeback<br/>ACTION: only writer to Jira and SN"]
+        INTAKE --> TRIAGE --> RELEASE
+    end
+
+    subgraph PRODUCT["Product / target repo"]
+        direction TB
+        FIX["ar-fix<br/>AGENTIC: fix, build, test, draft PR"]
+        CI["ar-ci-followup<br/>AGENTIC: fix CI, max 2 tries"]
+        READY["ar-ready<br/>ACTION: mark ready"]
+        CLOSE["ar-close<br/>ACTION: on merge"]
+        FIX --> CI --> READY
+    end
+
+    JIRA e1@--> INTAKE
+    INTAKE e2@--> CMDB
+    RELEASE e3@-->|"repository_dispatch"| FIX
+    READY e4@-->|"ar-event"| WB
+    CLOSE e5@-->|"ar-event"| WB
+    WB e6@--> JIRA
+
+    e1@{ animate: true }
+    e2@{ animate: true }
+    e3@{ animate: true }
+    e4@{ animate: true }
+    e5@{ animate: true }
+    e6@{ animate: true }
+
+    classDef action fill:#e8eefc,stroke:#3b5bdb,color:#000
+    classDef agent fill:#e6f6ec,stroke:#2b8a3e,color:#000
+    class INTAKE,RELEASE,WB,READY,CLOSE action
+    class TRIAGE,FIX,CI agent
+```
