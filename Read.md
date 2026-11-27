@@ -410,3 +410,100 @@ flowchart LR
 
     B --> Q["Filter by jira.key<br/>to follow one ticket across workflows"]
 ```
+
+### Organization-wide configuration
+The endpoint and credentials are configured once at the GitHub organization level, and each repository reads them at run time. Nothing is copied into the repository.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `GH_AW_DEFAULT_OTLP_ENDPOINT` | Secret or variable | OTLP endpoint used when a workflow has no `observability.otlp` block |
+| `GH_AW_DEFAULT_OTLP_HEADERS` | Secret | Auth headers as comma-separated `key=value` pairs |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | Variable | `http/protobuf` for backends that need it, such as Azure Monitor. Default is `http/json` |
+| `GH_AW_OTEL_METRICS` | Variable | Set to `false` to turn metrics off |
+
+Setup:
+```bash
+gh aw env otel --org <org> --endpoint <otlp-url> --protocol http/protobuf --headers-stdin --yes < headers.txt
+```
+
+How repositories inherit:
+1. Org-level Actions secrets and variables are shared with the selected repositories (all, private or selected).
+2. `gh aw compile` writes lookups for these names into the generated `.lock.yml`. Recompile once; after that, changing the org values needs no recompile.
+3. At run time GitHub resolves the lookup from the repository first, then the organization.
+4. A repository-level secret or variable with the same name overrides the org value.
+5. A repository outside the secret's visibility list gets an empty value, so export is a no-op.
+
+Behaviour:
+- Applies to agentic (gh-aw) workflows only, not plain Actions jobs.
+- Supports one default endpoint. Use the frontmatter endpoint list for several.
+- A workflow that defines `observability.otlp` ignores the org default entirely, so it must restate the endpoint and headers.
+- `observability.otlp: false` opts a workflow out.
+- `network.allowed` is still set per workflow.
+
+### Custom attributes with organization-wide observability
+The org default carries no custom attributes. A workflow that needs them defines `observability.otlp` and points the endpoint and headers at org-level secrets, so credentials are still defined once.
+
+Org-level secrets: `OTLP_ENDPOINT`, `OTLP_AUTHORIZATION` (bare header value; frontmatter `headers` is a map, unlike `GH_AW_DEFAULT_OTLP_HEADERS`).
+
+Attributes from a shared import and from the workflow itself are merged, so common tags are written once and each workflow adds its own.
+
+`.github/workflows/shared/otlp.md`:
+```yaml
+---
+observability:
+  otlp:
+    endpoint: ${{ secrets.OTLP_ENDPOINT }}
+    headers:
+      Authorization: ${{ secrets.OTLP_AUTHORIZATION }}
+    attributes:
+      product.id: <cmdb-product-id>
+    resource-attributes:
+      service.name: ar-remediation
+---
+```
+
+Fixer workflow:
+```yaml
+imports:
+  - shared/otlp.md
+observability:
+  otlp:
+    attributes:
+      workflow.role: fixer
+      jira.key: ${{ github.event.inputs.jira_key }}
+      remediation.attempt: ${{ github.event.inputs.attempt }}
+```
+
+Reviewer workflow:
+```yaml
+imports:
+  - shared/otlp.md
+observability:
+  otlp:
+    attributes:
+      workflow.role: reviewer
+      review.decision: ${{ github.event.inputs.decision }}
+```
+
+### Tracing one Jira ticket across workflows
+Each workflow run produces its own trace. A ticket is followed across the orchestrator, fixer and reviewer by stamping the same keys on every workflow:
+- `jira.key` is passed as an input on every hop (dispatch payload or workflow inputs).
+- `target.repo` and `product.id` (the CMDB key) identify the target.
+- `workflow.role` is `orchestrator`, `fixer` or `reviewer`.
+- `remediation.attempt` is incremented on each reviewer-requested retry.
+
+In the backend, filter by `jira.key` to list every run for the ticket, then order by time and group by `workflow.role`.
+
+### Retries and limits
+
+| What | Source | Signal |
+|---|---|---|
+| Agent turns within a run | Automatic | `gh-aw.turns`, `gh_aw.agent.turns` |
+| Engine or harness retries within a run | Automatic | `gh-aw.harness.attempts`, `gh-aw.harness.retry_reasons` |
+| AI credit budget reached | Automatic | `gh-aw.max_ai_credits_exceeded`, `gh_aw.ai.credits.limit_exceeded`, `gh-aw.ai_credits_rate_limit_error` |
+| Timeout or failure | Automatic | `gh_aw.job.errors`, `gh-aw.run.status` |
+| Safe-output cap reached | Automatic | `gh-aw.output.item_count` against the `safe-outputs` `max` |
+| Fixer re-run after reviewer feedback | Custom | `remediation.attempt` |
+| Retry ceiling and escalation | Custom | `remediation.max_attempts`, `remediation.outcome` |
+
+Reviewer-driven retries start a new fixer run, so gh-aw does not see them as retries. The attempt number is passed in the dispatch and stamped as a custom attribute. The ceiling is reached when `remediation.attempt` equals `remediation.max_attempts` without approval.
